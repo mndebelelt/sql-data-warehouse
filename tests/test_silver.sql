@@ -7,6 +7,8 @@ Run after: EXEC bronze.load_bronze ...; EXEC silver.load_silver;
 
 SET NOCOUNT ON;
 
+DECLARE @fail_on_error BIT = 1;  -- set to 0 if you only want results (no THROW)
+
 DECLARE @results TABLE (
     TestName NVARCHAR(200),
     Status   VARCHAR(4),
@@ -16,12 +18,12 @@ DECLARE @results TABLE (
 
 DECLARE @failures INT;
 
-----------------------------
+---------------------------------------
 -- 1) silver.crm_cust_info
-----------------------------
+---------------------------------------
 
 -- cst_id should not be NULL
-SELECT @failures = COUNT(*) 
+SELECT @failures = COUNT(*)
 FROM silver.crm_cust_info
 WHERE cst_id IS NULL;
 
@@ -48,6 +50,19 @@ SELECT
     @failures,
     'Duplicate cst_id values found';
 
+-- cst_key should be trimmed (no leading/trailing spaces)
+SELECT @failures = COUNT(*)
+FROM silver.crm_cust_info
+WHERE cst_key IS NOT NULL
+  AND cst_key <> TRIM(cst_key);
+
+INSERT INTO @results
+SELECT
+    'silver.crm_cust_info - cst_key trimmed',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'cst_key contains leading/trailing spaces';
+
 -- marital status should be standardized
 SELECT @failures = COUNT(*)
 FROM silver.crm_cust_info
@@ -73,9 +88,9 @@ SELECT
     'Allowed: Male, Female, n/a';
 
 
-----------------------------
+---------------------------------------
 -- 2) silver.crm_prd_info
-----------------------------
+---------------------------------------
 
 -- prd_id should not be NULL
 SELECT @failures = COUNT(*)
@@ -88,6 +103,19 @@ SELECT
     IIF(@failures = 0, 'PASS', 'FAIL'),
     @failures,
     'prd_id must never be NULL';
+
+-- prd_key should be trimmed
+SELECT @failures = COUNT(*)
+FROM silver.crm_prd_info
+WHERE prd_key IS NOT NULL
+  AND prd_key <> TRIM(prd_key);
+
+INSERT INTO @results
+SELECT
+    'silver.crm_prd_info - prd_key trimmed',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'prd_key contains leading/trailing spaces';
 
 -- product start date should not be NULL
 SELECT @failures = COUNT(*)
@@ -114,7 +142,7 @@ SELECT
     @failures,
     'Found prd_end_dt earlier than prd_start_dt';
 
--- cost should not be negative (NULL allowed if source bad)
+-- cost should not be negative (NULL allowed)
 SELECT @failures = COUNT(*)
 FROM silver.crm_prd_info
 WHERE prd_cost IS NOT NULL
@@ -128,9 +156,9 @@ SELECT
     'prd_cost cannot be negative';
 
 
-----------------------------
+---------------------------------------
 -- 3) silver.crm_sales_details
-----------------------------
+---------------------------------------
 
 -- order number should not be NULL
 SELECT @failures = COUNT(*)
@@ -144,8 +172,20 @@ SELECT
     @failures,
     'sls_ord_num must never be NULL';
 
--- dates: if present, must be valid (already converted to DATE)
--- here we check for logical ordering: order <= ship <= due (when all exist)
+-- product key should be trimmed
+SELECT @failures = COUNT(*)
+FROM silver.crm_sales_details
+WHERE sls_prd_key IS NOT NULL
+  AND sls_prd_key <> TRIM(sls_prd_key);
+
+INSERT INTO @results
+SELECT
+    'silver.crm_sales_details - sls_prd_key trimmed',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'sls_prd_key contains leading/trailing spaces';
+
+-- dates logical ordering: ship >= order (when both exist)
 SELECT @failures = COUNT(*)
 FROM silver.crm_sales_details
 WHERE sls_order_dt IS NOT NULL
@@ -159,6 +199,7 @@ SELECT
     @failures,
     'Ship date earlier than order date';
 
+-- due >= order (when both exist)
 SELECT @failures = COUNT(*)
 FROM silver.crm_sales_details
 WHERE sls_order_dt IS NOT NULL
@@ -172,7 +213,7 @@ SELECT
     @failures,
     'Due date earlier than order date';
 
--- numeric sanity: quantity and price non-negative
+-- numeric sanity: quantity/price/sales non-negative
 SELECT @failures = COUNT(*)
 FROM silver.crm_sales_details
 WHERE sls_quantity < 0 OR sls_price < 0 OR sls_sales < 0;
@@ -184,16 +225,44 @@ SELECT
     @failures,
     'Sales/quantity/price must be >= 0';
 
+-- ✅ NEW: sales rows must match a customer in silver (avoid orphan facts later)
+SELECT @failures = COUNT(*)
+FROM silver.crm_sales_details s
+LEFT JOIN silver.crm_cust_info c ON c.cst_id = s.sls_cst_id
+WHERE s.sls_cst_id IS NOT NULL
+  AND c.cst_id IS NULL;
 
-----------------------------
+INSERT INTO @results
+SELECT
+    'silver.crm_sales_details - sls_cst_id exists in silver.crm_cust_info',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Sales contains customer IDs missing from silver customer table';
+
+-- ✅ NEW: sales rows must match a product in silver
+SELECT @failures = COUNT(*)
+FROM silver.crm_sales_details s
+LEFT JOIN silver.crm_prd_info p ON p.prd_key = s.sls_prd_key
+WHERE s.sls_prd_key IS NOT NULL
+  AND p.prd_key IS NULL;
+
+INSERT INTO @results
+SELECT
+    'silver.crm_sales_details - sls_prd_key exists in silver.crm_prd_info',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Sales contains product keys missing from silver product table';
+
+
+---------------------------------------
 -- 4) ERP silver tables
-----------------------------
+---------------------------------------
 
 -- bdate should not be in the future
 SELECT @failures = COUNT(*)
 FROM silver.erp_cust_az12
 WHERE bdate IS NOT NULL
-  AND bdate > GETDATE();
+  AND bdate > CAST(GETDATE() AS DATE);
 
 INSERT INTO @results
 SELECT
@@ -202,10 +271,10 @@ SELECT
     @failures,
     'Birthdate cannot be in the future';
 
--- country should not be NULL/blank after cleanup
+-- country should not be NULL/blank
 SELECT @failures = COUNT(*)
 FROM silver.erp_loc_a101
-WHERE cntry IS NULL OR LTRIM(RTRIM(cntry)) = '';
+WHERE cntry IS NULL OR TRIM(cntry) = '';
 
 INSERT INTO @results
 SELECT
@@ -214,10 +283,27 @@ SELECT
     @failures,
     'cntry must be populated (or n/a)';
 
+-- ✅ NEW: px_cat columns trimmed
+SELECT @failures = COUNT(*)
+FROM silver.erp_px_cat_g1v2
+WHERE (cat IS NOT NULL AND cat <> TRIM(cat))
+   OR (subcat IS NOT NULL AND subcat <> TRIM(subcat))
+   OR (maintenance IS NOT NULL AND maintenance <> TRIM(maintenance));
 
-----------------------------
--- Summary output
-----------------------------
+INSERT INTO @results
+SELECT
+    'silver.erp_px_cat_g1v2 - trimmed columns',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'cat/subcat/maintenance contains leading/trailing spaces';
+
+
+---------------------------------------
+-- Summary output + optional fail
+---------------------------------------
 SELECT *
 FROM @results
 ORDER BY Status, TestName;
+
+IF @fail_on_error = 1 AND EXISTS (SELECT 1 FROM @results WHERE Status = 'FAIL')
+    THROW 51000, 'SILVER tests failed. Review the results above.', 1;

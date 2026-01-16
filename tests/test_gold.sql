@@ -1,11 +1,13 @@
 /*
 ===============================================================================
 Tests: GOLD layer checks (PASS/FAIL)
-Run after: silver loaded (and gold created / loaded if tables)
+Run after: silver loaded and gold objects created
 ===============================================================================
 */
 
 SET NOCOUNT ON;
+
+DECLARE @fail_on_error BIT = 1;  -- set to 0 if you only want results (no THROW)
 
 DECLARE @results TABLE (
     TestName NVARCHAR(200),
@@ -17,40 +19,29 @@ DECLARE @results TABLE (
 DECLARE @failures INT;
 
 -- Guard: objects exist
-IF OBJECT_ID('gold.dim_customers') IS NULL
-BEGIN
-    THROW 51001, 'Missing object: gold.dim_customers', 1;
-END;
+IF OBJECT_ID('gold.dim_customers') IS NULL THROW 51001, 'Missing object: gold.dim_customers', 1;
+IF OBJECT_ID('gold.dim_products')  IS NULL THROW 51002, 'Missing object: gold.dim_products', 1;
+IF OBJECT_ID('gold.fact_sales')    IS NULL THROW 51003, 'Missing object: gold.fact_sales', 1;
 
-IF OBJECT_ID('gold.dim_products') IS NULL
-BEGIN
-    THROW 51002, 'Missing object: gold.dim_products', 1;
-END;
-
-IF OBJECT_ID('gold.fact_sales') IS NULL
-BEGIN
-    THROW 51003, 'Missing object: gold.fact_sales', 1;
-END;
-
-
-----------------------------
+---------------------------------------
 -- Dim Customers
-----------------------------
--- customer_key unique
+---------------------------------------
+
+-- customer_key not null + unique
 SELECT @failures = COUNT(*)
 FROM (
     SELECT customer_key
     FROM gold.dim_customers
     GROUP BY customer_key
-    HAVING COUNT(*) > 1
+    HAVING customer_key IS NULL OR COUNT(*) > 1
 ) d;
 
 INSERT INTO @results
 SELECT
-    'gold.dim_customers - customer_key UNIQUE',
+    'gold.dim_customers - customer_key NOT NULL + UNIQUE',
     IIF(@failures = 0, 'PASS', 'FAIL'),
     @failures,
-    'Duplicate customer_key found';
+    'customer_key must be present and unique';
 
 -- cst_id should not be NULL
 SELECT @failures = COUNT(*)
@@ -65,29 +56,30 @@ SELECT
     'cst_id must not be NULL';
 
 
-----------------------------
+---------------------------------------
 -- Dim Products
-----------------------------
--- product_key unique
+---------------------------------------
+
+-- product_key not null + unique
 SELECT @failures = COUNT(*)
 FROM (
     SELECT product_key
     FROM gold.dim_products
     GROUP BY product_key
-    HAVING COUNT(*) > 1
+    HAVING product_key IS NULL OR COUNT(*) > 1
 ) d;
 
 INSERT INTO @results
 SELECT
-    'gold.dim_products - product_key UNIQUE',
+    'gold.dim_products - product_key NOT NULL + UNIQUE',
     IIF(@failures = 0, 'PASS', 'FAIL'),
     @failures,
-    'Duplicate product_key found';
+    'product_key must be present and unique';
 
--- prd_key should not be NULL
+-- prd_key should not be NULL/blank
 SELECT @failures = COUNT(*)
 FROM gold.dim_products
-WHERE prd_key IS NULL OR LTRIM(RTRIM(prd_key)) = '';
+WHERE prd_key IS NULL OR TRIM(prd_key) = '';
 
 INSERT INTO @results
 SELECT
@@ -97,9 +89,10 @@ SELECT
     'prd_key is NULL/blank';
 
 
-----------------------------
+---------------------------------------
 -- Fact Sales
-----------------------------
+---------------------------------------
+
 -- keys should not be NULL
 SELECT @failures = COUNT(*)
 FROM gold.fact_sales
@@ -107,12 +100,12 @@ WHERE customer_key IS NULL OR product_key IS NULL;
 
 INSERT INTO @results
 SELECT
-    'gold.fact_sales - FK keys not NULL',
+    'gold.fact_sales - FK keys NOT NULL',
     IIF(@failures = 0, 'PASS', 'FAIL'),
     @failures,
     'customer_key/product_key must not be NULL';
 
--- referential integrity: fact customer_key exists in dim_customers
+-- referential integrity: customer_key exists in dim_customers
 SELECT @failures = COUNT(*)
 FROM gold.fact_sales f
 LEFT JOIN gold.dim_customers c ON c.customer_key = f.customer_key
@@ -125,7 +118,7 @@ SELECT
     @failures,
     'Fact contains customer_key not found in dim_customers';
 
--- referential integrity: fact product_key exists in dim_products
+-- referential integrity: product_key exists in dim_products
 SELECT @failures = COUNT(*)
 FROM gold.fact_sales f
 LEFT JOIN gold.dim_products p ON p.product_key = f.product_key
@@ -138,7 +131,7 @@ SELECT
     @failures,
     'Fact contains product_key not found in dim_products';
 
--- numeric sanity
+-- numeric sanity (adjust if you later model returns as negatives)
 SELECT @failures = COUNT(*)
 FROM gold.fact_sales
 WHERE sls_sales < 0 OR sls_quantity < 0 OR sls_price < 0;
@@ -150,10 +143,28 @@ SELECT
     @failures,
     'Sales/quantity/price must be >= 0';
 
+-- ✅ NEW: order date should not be in the future (if column exists)
+IF COL_LENGTH('gold.fact_sales', 'sls_order_dt') IS NOT NULL
+BEGIN
+    SELECT @failures = COUNT(*)
+    FROM gold.fact_sales
+    WHERE sls_order_dt IS NOT NULL
+      AND sls_order_dt > CAST(GETDATE() AS DATE);
 
-----------------------------
--- Summary output
-----------------------------
+    INSERT INTO @results
+    SELECT
+        'gold.fact_sales - sls_order_dt not in future',
+        IIF(@failures = 0, 'PASS', 'FAIL'),
+        @failures,
+        'Order date cannot be in the future';
+END
+
+---------------------------------------
+-- Summary output + optional fail
+---------------------------------------
 SELECT *
 FROM @results
 ORDER BY Status, TestName;
+
+IF @fail_on_error = 1 AND EXISTS (SELECT 1 FROM @results WHERE Status = 'FAIL')
+    THROW 51010, 'GOLD tests failed. Review the results above.', 1;

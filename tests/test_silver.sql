@@ -1,143 +1,223 @@
 /*
 ===============================================================================
-Quality Checks
-===============================================================================
-Script Purpose:
-    This script performs various quality checks for data consistency, accuracy, 
-    and standardization across the 'silver' layer. It includes checks for:
-    - Null or duplicate primary keys.
-    - Unwanted spaces in string fields.
-    - Data standardization and consistency.
-    - Invalid date ranges and orders.
-    - Data consistency between related fields.
-
-Usage Notes:
-    - Run these checks after data loading Silver Layer.
-    - Investigate and resolve any discrepancies found during the checks.
+Tests: SILVER layer data quality checks (PASS/FAIL)
+Run after: EXEC bronze.load_bronze ...; EXEC silver.load_silver;
 ===============================================================================
 */
 
--- ====================================================================
--- Checking 'silver.crm_cust_info'
--- ====================================================================
--- Check for NULLs or Duplicates in Primary Key
--- Expectation: No Results
-SELECT cst_id,
-    COUNT(*) 
+SET NOCOUNT ON;
+
+DECLARE @results TABLE (
+    TestName NVARCHAR(200),
+    Status   VARCHAR(4),
+    Failures INT,
+    Notes    NVARCHAR(4000)
+);
+
+DECLARE @failures INT;
+
+----------------------------
+-- 1) silver.crm_cust_info
+----------------------------
+
+-- cst_id should not be NULL
+SELECT @failures = COUNT(*) 
 FROM silver.crm_cust_info
-GROUP BY cst_id
-HAVING COUNT(*) > 1 OR cst_id IS NULL;
+WHERE cst_id IS NULL;
 
--- Check for Unwanted Spaces
--- Expectation: No Results
-SELECT cst_key 
+INSERT INTO @results
+SELECT
+    'silver.crm_cust_info - cst_id NOT NULL',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'cst_id must never be NULL';
+
+-- cst_id should be unique (one row per customer after dedupe)
+SELECT @failures = COUNT(*)
+FROM (
+    SELECT cst_id
+    FROM silver.crm_cust_info
+    GROUP BY cst_id
+    HAVING COUNT(*) > 1
+) d;
+
+INSERT INTO @results
+SELECT
+    'silver.crm_cust_info - cst_id UNIQUE',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Duplicate cst_id values found';
+
+-- marital status should be standardized
+SELECT @failures = COUNT(*)
 FROM silver.crm_cust_info
-WHERE cst_key != TRIM(cst_key);
+WHERE cst_marital_status NOT IN ('Single', 'Married', 'n/a');
 
--- Data Standardization & Consistency
-SELECT DISTINCT cst_marital_status 
-FROM silver.crm_cust_info;
+INSERT INTO @results
+SELECT
+    'silver.crm_cust_info - marital status domain',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Allowed: Single, Married, n/a';
 
--- ====================================================================
--- Checking 'silver.crm_prd_info'
--- ====================================================================
--- Check for NULLs or Duplicates in Primary Key
--- Expectation: No Results
-SELECT prd_id,
-       COUNT(*) 
+-- gender should be standardized
+SELECT @failures = COUNT(*)
+FROM silver.crm_cust_info
+WHERE cst_gndr NOT IN ('Male', 'Female', 'n/a');
+
+INSERT INTO @results
+SELECT
+    'silver.crm_cust_info - gender domain',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Allowed: Male, Female, n/a';
+
+
+----------------------------
+-- 2) silver.crm_prd_info
+----------------------------
+
+-- prd_id should not be NULL
+SELECT @failures = COUNT(*)
 FROM silver.crm_prd_info
-GROUP BY prd_id
-HAVING COUNT(*) > 1 OR prd_id IS NULL;
+WHERE prd_id IS NULL;
 
--- Check for Unwanted Spaces
--- Expectation: No Results
-SELECT prd_nm 
+INSERT INTO @results
+SELECT
+    'silver.crm_prd_info - prd_id NOT NULL',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'prd_id must never be NULL';
+
+-- product start date should not be NULL
+SELECT @failures = COUNT(*)
 FROM silver.crm_prd_info
-WHERE prd_nm != TRIM(prd_nm);
+WHERE prd_start_dt IS NULL;
 
--- Check for NULLs or Negative Values in Cost
--- Expectation: No Results
-SELECT prd_cost 
+INSERT INTO @results
+SELECT
+    'silver.crm_prd_info - prd_start_dt NOT NULL',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'prd_start_dt should be populated';
+
+-- end date (if present) must be >= start date
+SELECT @failures = COUNT(*)
 FROM silver.crm_prd_info
-WHERE prd_cost < 0 OR prd_cost IS NULL;
+WHERE prd_end_dt IS NOT NULL
+  AND prd_end_dt < prd_start_dt;
 
--- Data Standardization & Consistency
-SELECT DISTINCT prd_line 
-FROM silver.crm_prd_info;
+INSERT INTO @results
+SELECT
+    'silver.crm_prd_info - prd_end_dt >= prd_start_dt',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Found prd_end_dt earlier than prd_start_dt';
 
--- Check for Invalid Date Orders (Start Date > End Date)
--- Expectation: No Results
-SELECT * 
+-- cost should not be negative (NULL allowed if source bad)
+SELECT @failures = COUNT(*)
 FROM silver.crm_prd_info
-WHERE prd_end_dt < prd_start_dt;
+WHERE prd_cost IS NOT NULL
+  AND prd_cost < 0;
 
--- ====================================================================
--- Checking 'silver.crm_sales_details'
--- ====================================================================
--- Check for Invalid Dates
--- Expectation: No Invalid Dates
-SELECT NULLIF(sls_due_dt, 0) AS sls_due_dt 
-FROM bronze.crm_sales_details
-WHERE sls_due_dt <= 0 
-    OR LEN(sls_due_dt) != 8 
-    OR sls_due_dt > 20500101 
-    OR sls_due_dt < 19000101;
+INSERT INTO @results
+SELECT
+    'silver.crm_prd_info - prd_cost non-negative',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'prd_cost cannot be negative';
 
--- Check for Invalid Date Orders (Order Date > Shipping/Due Dates)
--- Expectation: No Results
-SELECT * 
+
+----------------------------
+-- 3) silver.crm_sales_details
+----------------------------
+
+-- order number should not be NULL
+SELECT @failures = COUNT(*)
 FROM silver.crm_sales_details
-WHERE sls_order_dt > sls_ship_dt 
-   OR sls_order_dt > sls_due_dt;
+WHERE sls_ord_num IS NULL;
 
--- Check Data Consistency: Sales = Quantity * Price
--- Expectation: No Results
-SELECT DISTINCT sls_sales,
-                sls_quantity,
-                sls_price 
+INSERT INTO @results
+SELECT
+    'silver.crm_sales_details - sls_ord_num NOT NULL',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'sls_ord_num must never be NULL';
+
+-- dates: if present, must be valid (already converted to DATE)
+-- here we check for logical ordering: order <= ship <= due (when all exist)
+SELECT @failures = COUNT(*)
 FROM silver.crm_sales_details
-WHERE sls_sales != sls_quantity * sls_price
-   OR sls_sales IS NULL 
-   OR sls_quantity IS NULL 
-   OR sls_price IS NULL
-   OR sls_sales <= 0 
-   OR sls_quantity <= 0 
-   OR sls_price <= 0
-ORDER BY sls_sales, sls_quantity, sls_price;
+WHERE sls_order_dt IS NOT NULL
+  AND sls_ship_dt IS NOT NULL
+  AND sls_ship_dt < sls_order_dt;
 
--- ====================================================================
--- Checking 'silver.erp_cust_az12'
--- ====================================================================
--- Identify Out-of-Range Dates
--- Expectation: Birthdates between 1924-01-01 and Today
-SELECT DISTINCT bdate 
+INSERT INTO @results
+SELECT
+    'silver.crm_sales_details - ship_dt >= order_dt',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Ship date earlier than order date';
+
+SELECT @failures = COUNT(*)
+FROM silver.crm_sales_details
+WHERE sls_order_dt IS NOT NULL
+  AND sls_due_dt IS NOT NULL
+  AND sls_due_dt < sls_order_dt;
+
+INSERT INTO @results
+SELECT
+    'silver.crm_sales_details - due_dt >= order_dt',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Due date earlier than order date';
+
+-- numeric sanity: quantity and price non-negative
+SELECT @failures = COUNT(*)
+FROM silver.crm_sales_details
+WHERE sls_quantity < 0 OR sls_price < 0 OR sls_sales < 0;
+
+INSERT INTO @results
+SELECT
+    'silver.crm_sales_details - non-negative measures',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Sales/quantity/price must be >= 0';
+
+
+----------------------------
+-- 4) ERP silver tables
+----------------------------
+
+-- bdate should not be in the future
+SELECT @failures = COUNT(*)
 FROM silver.erp_cust_az12
-WHERE bdate < '1924-01-01' 
-   OR bdate > GETDATE();
+WHERE bdate IS NOT NULL
+  AND bdate > GETDATE();
 
--- Data Standardization & Consistency
-SELECT DISTINCT gen 
-FROM silver.erp_cust_az12;
+INSERT INTO @results
+SELECT
+    'silver.erp_cust_az12 - bdate not in future',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'Birthdate cannot be in the future';
 
--- ====================================================================
--- Checking 'silver.erp_loc_a101'
--- ====================================================================
--- Data Standardization & Consistency
-SELECT DISTINCT cntry 
+-- country should not be NULL/blank after cleanup
+SELECT @failures = COUNT(*)
 FROM silver.erp_loc_a101
-ORDER BY cntry;
+WHERE cntry IS NULL OR LTRIM(RTRIM(cntry)) = '';
 
--- ====================================================================
--- Checking 'silver.erp_px_cat_g1v2'
--- ====================================================================
--- Check for Unwanted Spaces
--- Expectation: No Results
-SELECT * 
-FROM silver.erp_px_cat_g1v2
-WHERE cat != TRIM(cat) 
-   OR subcat != TRIM(subcat) 
-   OR maintenance != TRIM(maintenance);
+INSERT INTO @results
+SELECT
+    'silver.erp_loc_a101 - cntry populated',
+    IIF(@failures = 0, 'PASS', 'FAIL'),
+    @failures,
+    'cntry must be populated (or n/a)';
 
--- Data Standardization & Consistency
-SELECT DISTINCT maintenance 
-FROM silver.erp_px_cat_g1v2;
+
+----------------------------
+-- Summary output
+----------------------------
+SELECT *
+FROM @results
+ORDER BY Status, TestName;

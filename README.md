@@ -50,9 +50,9 @@ data-warehouse-project/
 ├── datasets/                           # Raw datasets used for the project (ERP and CRM data)
 │
 ├── docs/                               # Project documentation and architecture details
-│   ├── high_level_architecture.png        # Draw.io file shows the project's architecture
+│   ├── high_level_architecture.png        # The high level architecture overview
 │   ├── data_catalog.md                 # Catalog of datasets, including field descriptions and metadata
-│   ├── data_models.png              # Draw.io file for data models (star schema)
+│   ├── data_models.png              # Data models
 │ 
 │
 ├── scripts/                            # SQL scripts for ETL and transformations

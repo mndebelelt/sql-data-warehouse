@@ -48,9 +48,11 @@ jobs:
           docker logs sqlserver || true
           exit 1
 
+
       - name: Build warehouse (run all scripts)
         run: |
-          sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -C -b -i scripts/00_run_all.sql
+          cd scripts
+          sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -C -b -i 00_run_all.sql
 
       - name: Run data quality tests
         run: |

@@ -1,19 +1,19 @@
-# Data Warehouse Project
+# SQL Data Warehouse Project (Medallion Architecture)
 
-Welcome to the **Data Warehouse Project**
-This project demonstrates a comprehensive data warehousing solution.
+This project demonstrates the design and implementation of a modern **SQL Server-based data warehouse** using the **Bronze / Silver / Gold (Medallion) architecture**.  
+It simulates ingesting data from multiple operational sources (CRM and ERP), transforming it through structured layers, and producing analytics-ready datasets.
 
 ---
 ## 🏗️ Data Architecture
 
-The data architecture for this project follows Medallion Architecture **Bronze**, **Silver**, and **Gold** layers:
-![Data Architecture](docs/high_level_architecture.png)
+1. **Bronze Layer**: Raw ingestion of source data with minimal transformation 
+2. **Silver Layer**: Cleansed, standardized, and conformed datasets  
+3. **Gold Layer**: Business-ready dimensional model (facts and dimensions)
 
-1. **Bronze Layer**: Stores raw data as-is from the source systems. Data is ingested from CSV Files into SQL Server Database.
-2. **Silver Layer**: This layer includes data cleansing, standardization, and normalization processes to prepare data for analysis.
-3. **Gold Layer**: Houses business-ready data modeled into a star schema required for reporting and analytics.
 
+Architecture diagrams and data models are available in the `/docs` folder.
 ---
+
 ## 📖 Project Overview
 
 This project involves:
@@ -41,7 +41,6 @@ Develop a modern data warehouse using SQL Server to consolidate sales data, enab
 
 ---
 
-See docs/data_catalog.md and the architecture diagrams in docs/*.png.
 
 ## 📂 Repository Structure
 ```
@@ -65,3 +64,8 @@ data-warehouse-project/
 └──README.md                           # Project overview and instructions
 ```
 ---
+
+
+## Prerequisites
+- SQL Server
+- SQL Server Management Studio (SSMS) or Azure Data Studio

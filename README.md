@@ -69,3 +69,7 @@ data-warehouse-project/
 ## Prerequisites
 - SQL Server
 - SQL Server Management Studio (SSMS) or Azure Data Studio
+
+## Credits
+This project is based on the guided SQL Data Warehouse project by **Data With Baraa**.
+I used it as a learning foundation and extended it. 

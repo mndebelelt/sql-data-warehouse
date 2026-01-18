@@ -1,3 +1,32 @@
+/*
+=============================================================
+Gold Layer - Views
+=============================================================
+Creates analytics-ready GOLD views built from SILVER tables.
+=============================================================
+*/
+
+USE DataWarehouse;
+GO
+
+SET NOCOUNT ON;
+GO
+
+-- Guards: required SILVER objects must exist
+IF OBJECT_ID('silver.crm_cust_info', 'U') IS NULL THROW 52001, 'Missing object: silver.crm_cust_info', 1;
+IF OBJECT_ID('silver.erp_cust_az12', 'U') IS NULL THROW 52002, 'Missing object: silver.erp_cust_az12', 1;
+IF OBJECT_ID('silver.erp_loc_a101',  'U') IS NULL THROW 52003, 'Missing object: silver.erp_loc_a101', 1;
+
+IF OBJECT_ID('silver.crm_prd_info',      'U') IS NULL THROW 52004, 'Missing object: silver.crm_prd_info', 1;
+IF OBJECT_ID('silver.erp_px_cat_g1v2',   'U') IS NULL THROW 52005, 'Missing object: silver.erp_px_cat_g1v2', 1;
+IF OBJECT_ID('silver.crm_sales_details', 'U') IS NULL THROW 52006, 'Missing object: silver.crm_sales_details', 1;
+GO
+
+-- Ensure gold schema exists (extra safety)
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'gold')
+    EXEC('CREATE SCHEMA gold');
+GO
+
 CREATE OR ALTER VIEW gold.dim_customers AS
 SELECT
     ROW_NUMBER() OVER (ORDER BY ci.cst_id, ci.cst_key) AS customer_key,
@@ -7,7 +36,7 @@ SELECT
     ci.cst_lastname    AS last_name,
     la.cntry           AS country,
     ci.cst_marital_status AS marital_status,
-    CASE 
+    CASE
         WHEN ci.cst_gndr <> 'n/a' THEN ci.cst_gndr
         ELSE COALESCE(ca.gen, 'n/a')
     END AS gender,
@@ -48,5 +77,14 @@ SELECT
     sd.sls_quantity AS quantity,
     sd.sls_price    AS price
 FROM silver.crm_sales_details sd
-INNER JOIN gold.dim_products pr ON sd.sls_prd_key = pr.product_number   
-INNER JOIN gold.dim_customers cu ON sd.sls_cust_id = cu.customer_id;   
+INNER JOIN gold.dim_products pr ON sd.sls_prd_key = pr.product_number
+INNER JOIN gold.dim_customers cu ON sd.sls_cust_id = cu.customer_id;
+GO
+
+PRINT 'Gold build complete. Listing gold objects...';
+SELECT s.name AS [schema], o.name AS [object], o.type_desc
+FROM sys.objects o
+JOIN sys.schemas s ON s.schema_id = o.schema_id
+WHERE s.name = 'gold'
+ORDER BY o.type_desc, o.name;
+GO

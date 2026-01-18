@@ -1,0 +1,59 @@
+name: SQL Warehouse CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: ${{ secrets.SA_PASSWORD }}
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P '${{ secrets.SA_PASSWORD }}' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install sqlcmd (mssql-tools18)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl apt-transport-https gnupg
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
+          echo "/opt/mssql-tools18/bin" >> $GITHUB_PATH
+
+      - name: Wait for SQL Server to be ready
+        run: |
+          for i in {1..40}; do
+            sqlcmd -S localhost -U sa -P "${{ secrets.SA_PASSWORD }}" -C -Q "SELECT 1" && break
+            echo "Waiting for SQL Server..."
+            sleep 5
+          done
+
+      - name: Build warehouse (run all scripts)
+        run: |
+          sqlcmd -S localhost -U sa -P "${{ secrets.SA_PASSWORD }}" -C -b -i scripts/00_run_all.sql
+
+      - name: Run data quality tests
+        run: |
+          set -e
+          for f in tests/*.sql; do
+            echo "Running $f"
+            sqlcmd -S localhost -U sa -P "${{ secrets.SA_PASSWORD }}" -C -b -i "$f"
+          done

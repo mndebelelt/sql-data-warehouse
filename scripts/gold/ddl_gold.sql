@@ -1,6 +1,6 @@
 CREATE OR ALTER VIEW gold.dim_customers AS
 SELECT
-    ROW_NUMBER() OVER (ORDER BY ci.cst_id) AS customer_key,
+    ROW_NUMBER() OVER (ORDER BY ci.cst_id, ci.cst_key) AS customer_key,
     ci.cst_id          AS customer_id,
     ci.cst_key         AS customer_number,
     ci.cst_firstname   AS first_name,
@@ -48,6 +48,5 @@ SELECT
     sd.sls_quantity AS quantity,
     sd.sls_price    AS price
 FROM silver.crm_sales_details sd
-LEFT JOIN gold.dim_products pr ON sd.sls_prd_key = pr.product_number
-LEFT JOIN gold.dim_customers cu ON sd.sls_cust_id = cu.customer_id;
-GO
+INNER JOIN gold.dim_products pr ON sd.sls_prd_key = pr.product_number   
+INNER JOIN gold.dim_customers cu ON sd.sls_cust_id = cu.customer_id;   

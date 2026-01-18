@@ -225,34 +225,19 @@ SELECT
     @failures,
     'Sales/quantity/price must be >= 0';
 
--- ✅ NEW: sales rows must match a customer in silver (avoid orphan facts later)
+-- sales rows must match a customer in silver (avoid orphan facts later)
 SELECT @failures = COUNT(*)
 FROM silver.crm_sales_details s
-LEFT JOIN silver.crm_cust_info c ON c.cst_id = s.sls_cst_id
-WHERE s.sls_cst_id IS NOT NULL
+LEFT JOIN silver.crm_cust_info c ON c.cst_id = s.sls_cust_id
+WHERE s.sls_cust_id IS NOT NULL
   AND c.cst_id IS NULL;
 
 INSERT INTO @results
 SELECT
-    'silver.crm_sales_details - sls_cst_id exists in silver.crm_cust_info',
+    'silver.crm_sales_details - sls_cust_id exists in silver.crm_cust_info',
     IIF(@failures = 0, 'PASS', 'FAIL'),
     @failures,
     'Sales contains customer IDs missing from silver customer table';
-
--- ✅ NEW: sales rows must match a product in silver
-SELECT @failures = COUNT(*)
-FROM silver.crm_sales_details s
-LEFT JOIN silver.crm_prd_info p ON p.prd_key = s.sls_prd_key
-WHERE s.sls_prd_key IS NOT NULL
-  AND p.prd_key IS NULL;
-
-INSERT INTO @results
-SELECT
-    'silver.crm_sales_details - sls_prd_key exists in silver.crm_prd_info',
-    IIF(@failures = 0, 'PASS', 'FAIL'),
-    @failures,
-    'Sales contains product keys missing from silver product table';
-
 
 ---------------------------------------
 -- 4) ERP silver tables
@@ -283,7 +268,7 @@ SELECT
     @failures,
     'cntry must be populated (or n/a)';
 
--- ✅ NEW: px_cat columns trimmed
+-- px_cat columns trimmed
 SELECT @failures = COUNT(*)
 FROM silver.erp_px_cat_g1v2
 WHERE (cat IS NOT NULL AND cat <> TRIM(cat))

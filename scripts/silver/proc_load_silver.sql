@@ -1,8 +1,10 @@
 /*
 ===============================================================================
 Stored Procedure: silver.load_silver
-Purpose: Loads data from bronze layer into silver layer with cleansing,
-         standardization, deduplication, and type conversion.
+Purpose:
+  Loads data from bronze layer into silver layer with cleansing,
+  standardization, deduplication, and type conversion.
+  Includes per-table timing + row counts.
 ===============================================================================
 */
 
@@ -11,21 +13,25 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @start_time DATETIME2, @end_time DATETIME2;
+    DECLARE @start_time DATETIME2(7), @end_time DATETIME2(7);
+    DECLARE @table SYSNAME;
+    DECLARE @rows INT;
 
     BEGIN TRY
         PRINT '================================================';
         PRINT 'Loading SILVER Layer';
         PRINT '================================================';
 
-        ------------------------------------------------------------
-        -- Load: silver.crm_cust_info
-        ------------------------------------------------------------
-        SET @start_time = GETDATE();
-        PRINT '>> Truncating Table: silver.crm_cust_info';
+        ---------------------------------------------------------------------
+        -- 1) silver.crm_cust_info
+        ---------------------------------------------------------------------
+        SET @table = 'silver.crm_cust_info';
+        SET @start_time = SYSUTCDATETIME();
+
+        PRINT '>> Truncating Table: ' + @table;
         TRUNCATE TABLE silver.crm_cust_info;
 
-        PRINT '>> Inserting Data Into: silver.crm_cust_info';
+        PRINT '>> Inserting Data Into: ' + @table;
 
         ;WITH ranked_customers AS (
             SELECT
@@ -55,38 +61,56 @@ BEGIN
         )
         SELECT
             cst_id,
-            LTRIM(RTRIM(cst_key)) AS cst_key,
-            LTRIM(RTRIM(cst_firstname)) AS cst_firstname,
-            LTRIM(RTRIM(cst_lastname)) AS cst_lastname,
+            TRIM(cst_key) AS cst_key,
+            TRIM(cst_firstname) AS cst_firstname,
+            TRIM(cst_lastname) AS cst_lastname,
             CASE
-                WHEN UPPER(LTRIM(RTRIM(cst_marital_status))) IN ('S', 'SINGLE') THEN 'Single'
-                WHEN UPPER(LTRIM(RTRIM(cst_marital_status))) IN ('M', 'MARRIED') THEN 'Married'
+                WHEN UPPER(TRIM(cst_marital_status)) IN ('S', 'SINGLE') THEN 'Single'
+                WHEN UPPER(TRIM(cst_marital_status)) IN ('M', 'MARRIED') THEN 'Married'
                 ELSE 'n/a'
             END AS cst_marital_status,
             CASE
-                WHEN UPPER(LTRIM(RTRIM(cst_gndr))) IN ('F', 'FEMALE') THEN 'Female'
-                WHEN UPPER(LTRIM(RTRIM(cst_gndr))) IN ('M', 'MALE') THEN 'Male'
+                WHEN UPPER(TRIM(cst_gndr)) IN ('F', 'FEMALE') THEN 'Female'
+                WHEN UPPER(TRIM(cst_gndr)) IN ('M', 'MALE') THEN 'Male'
                 ELSE 'n/a'
             END AS cst_gndr,
             cst_create_date
         FROM ranked_customers
         WHERE rn = 1;
 
-        SET @end_time = GETDATE();
-        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR) + ' seconds';
+        SET @rows = @@ROWCOUNT;
+
+        SET @end_time = SYSUTCDATETIME();
+        PRINT '>> Rows Loaded: ' + CAST(@rows AS NVARCHAR(20));
+        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' seconds';
         PRINT '>> -------------';
 
 
-        ------------------------------------------------------------
-        -- Load: silver.crm_prd_info
-        ------------------------------------------------------------
-        SET @start_time = GETDATE();
-        PRINT '>> Truncating Table: silver.crm_prd_info';
+        ---------------------------------------------------------------------
+        -- 2) silver.crm_prd_info
+        ---------------------------------------------------------------------
+        SET @table = 'silver.crm_prd_info';
+        SET @start_time = SYSUTCDATETIME();
+
+        PRINT '>> Truncating Table: ' + @table;
         TRUNCATE TABLE silver.crm_prd_info;
 
-        PRINT '>> Inserting Data Into: silver.crm_prd_info';
+        PRINT '>> Inserting Data Into: ' + @table;
 
-        ;WITH cleaned_products AS (
+        ;WITH base_products AS (
+            SELECT
+                prd_id,
+                TRIM(prd_key) AS prd_key,
+                TRIM(prd_nm)  AS prd_nm,
+                prd_cost,
+                TRIM(prd_line) AS prd_line,
+                CAST(prd_start_dt AS DATE) AS prd_start_dt
+            FROM bronze.crm_prd_info
+            WHERE prd_id IS NOT NULL
+              AND prd_key IS NOT NULL
+        ),
+        -- If source includes duplicate rows, dedupe on (prd_key, prd_start_dt)
+        ranked_products AS (
             SELECT
                 prd_id,
                 prd_key,
@@ -95,32 +119,34 @@ BEGIN
                 prd_line,
                 prd_start_dt,
                 ROW_NUMBER() OVER (
-                    PARTITION BY prd_id
-                    ORDER BY prd_start_dt DESC
+                    PARTITION BY prd_key, prd_start_dt
+                    ORDER BY prd_id DESC
                 ) AS rn
-            FROM bronze.crm_prd_info
-            WHERE prd_id IS NOT NULL
+            FROM base_products
         ),
-        final_products AS (
+        cleaned_products AS (
             SELECT
                 prd_id,
-                LTRIM(RTRIM(prd_key)) AS prd_key,
-                LTRIM(RTRIM(prd_nm)) AS prd_nm,
+                -- derive category id from first 5 chars of prd_key: 'AC-HE' -> 'AC_HE'
+                REPLACE(LEFT(prd_key, 5), '-', '_') AS cat_id,
+                prd_key,
+                prd_nm,
                 TRY_CONVERT(DECIMAL(18,2), prd_cost) AS prd_cost,
                 CASE
-                    WHEN UPPER(LTRIM(RTRIM(prd_line))) = 'M' THEN 'Mountain'
-                    WHEN UPPER(LTRIM(RTRIM(prd_line))) = 'R' THEN 'Road'
-                    WHEN UPPER(LTRIM(RTRIM(prd_line))) = 'S' THEN 'Other Sales'
-                    WHEN UPPER(LTRIM(RTRIM(prd_line))) = 'T' THEN 'Touring'
+                    WHEN UPPER(prd_line) = 'M' THEN 'Mountain'
+                    WHEN UPPER(prd_line) = 'R' THEN 'Road'
+                    WHEN UPPER(prd_line) = 'S' THEN 'Other Sales'
+                    WHEN UPPER(prd_line) = 'T' THEN 'Touring'
                     ELSE 'n/a'
                 END AS prd_line,
-                CAST(prd_start_dt AS DATE) AS prd_start_dt
-            FROM cleaned_products
+                prd_start_dt
+            FROM ranked_products
             WHERE rn = 1
         )
         INSERT INTO silver.crm_prd_info
         (
             prd_id,
+            cat_id,
             prd_key,
             prd_nm,
             prd_cost,
@@ -130,33 +156,39 @@ BEGIN
         )
         SELECT
             prd_id,
+            cat_id,
             prd_key,
             prd_nm,
             prd_cost,
             prd_line,
             prd_start_dt,
             DATEADD(DAY, -1, LEAD(prd_start_dt) OVER (PARTITION BY prd_key ORDER BY prd_start_dt)) AS prd_end_dt
-        FROM final_products;
+        FROM cleaned_products;
 
-        SET @end_time = GETDATE();
-        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR) + ' seconds';
+        SET @rows = @@ROWCOUNT;
+
+        SET @end_time = SYSUTCDATETIME();
+        PRINT '>> Rows Loaded: ' + CAST(@rows AS NVARCHAR(20));
+        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' seconds';
         PRINT '>> -------------';
 
 
-        ------------------------------------------------------------
-        -- Load: silver.crm_sales_details
-        ------------------------------------------------------------
-        SET @start_time = GETDATE();
-        PRINT '>> Truncating Table: silver.crm_sales_details';
+        ---------------------------------------------------------------------
+        -- 3) silver.crm_sales_details
+        ---------------------------------------------------------------------
+        SET @table = 'silver.crm_sales_details';
+        SET @start_time = SYSUTCDATETIME();
+
+        PRINT '>> Truncating Table: ' + @table;
         TRUNCATE TABLE silver.crm_sales_details;
 
-        PRINT '>> Inserting Data Into: silver.crm_sales_details';
+        PRINT '>> Inserting Data Into: ' + @table;
 
         INSERT INTO silver.crm_sales_details
         (
             sls_ord_num,
             sls_prd_key,
-            sls_cst_id,
+            sls_cust_id,
             sls_order_dt,
             sls_ship_dt,
             sls_due_dt,
@@ -166,43 +198,47 @@ BEGIN
         )
         SELECT
             sls_ord_num,
-            LTRIM(RTRIM(sls_prd_key)) AS sls_prd_key,
-            sls_cst_id,
+            TRIM(sls_prd_key) AS sls_prd_key,
+            sls_cust_id,
 
             CASE
-                WHEN sls_order_dt = 0 OR LEN(CONVERT(VARCHAR(20), sls_order_dt)) <> 8 THEN NULL
+                WHEN sls_order_dt IS NULL OR sls_order_dt = 0 OR LEN(CONVERT(VARCHAR(20), sls_order_dt)) <> 8 THEN NULL
                 ELSE TRY_CONVERT(DATE, CONVERT(CHAR(8), sls_order_dt), 112)
             END AS sls_order_dt,
 
             CASE
-                WHEN sls_ship_dt = 0 OR LEN(CONVERT(VARCHAR(20), sls_ship_dt)) <> 8 THEN NULL
+                WHEN sls_ship_dt IS NULL OR sls_ship_dt = 0 OR LEN(CONVERT(VARCHAR(20), sls_ship_dt)) <> 8 THEN NULL
                 ELSE TRY_CONVERT(DATE, CONVERT(CHAR(8), sls_ship_dt), 112)
             END AS sls_ship_dt,
 
             CASE
-                WHEN sls_due_dt = 0 OR LEN(CONVERT(VARCHAR(20), sls_due_dt)) <> 8 THEN NULL
+                WHEN sls_due_dt IS NULL OR sls_due_dt = 0 OR LEN(CONVERT(VARCHAR(20), sls_due_dt)) <> 8 THEN NULL
                 ELSE TRY_CONVERT(DATE, CONVERT(CHAR(8), sls_due_dt), 112)
             END AS sls_due_dt,
 
-            -- Sales / quantity / price cleanup
-            CASE WHEN sls_sales IS NULL OR sls_sales < 0 THEN 0 ELSE sls_sales END AS sls_sales,
+            CASE WHEN sls_sales    IS NULL OR sls_sales    < 0 THEN 0 ELSE sls_sales END AS sls_sales,
             CASE WHEN sls_quantity IS NULL OR sls_quantity < 0 THEN 0 ELSE sls_quantity END AS sls_quantity,
-            CASE WHEN sls_price IS NULL OR sls_price < 0 THEN 0 ELSE sls_price END AS sls_price
+            CASE WHEN sls_price    IS NULL OR sls_price    < 0 THEN 0 ELSE sls_price END AS sls_price
         FROM bronze.crm_sales_details;
 
-        SET @end_time = GETDATE();
-        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR) + ' seconds';
+        SET @rows = @@ROWCOUNT;
+
+        SET @end_time = SYSUTCDATETIME();
+        PRINT '>> Rows Loaded: ' + CAST(@rows AS NVARCHAR(20));
+        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' seconds';
         PRINT '>> -------------';
 
 
-        ------------------------------------------------------------
-        -- Load: silver.erp_cust_az12
-        ------------------------------------------------------------
-        SET @start_time = GETDATE();
-        PRINT '>> Truncating Table: silver.erp_cust_az12';
+        ---------------------------------------------------------------------
+        -- 4) silver.erp_cust_az12
+        ---------------------------------------------------------------------
+        SET @table = 'silver.erp_cust_az12';
+        SET @start_time = SYSUTCDATETIME();
+
+        PRINT '>> Truncating Table: ' + @table;
         TRUNCATE TABLE silver.erp_cust_az12;
 
-        PRINT '>> Inserting Data Into: silver.erp_cust_az12';
+        PRINT '>> Inserting Data Into: ' + @table;
 
         INSERT INTO silver.erp_cust_az12
         (
@@ -211,31 +247,36 @@ BEGIN
             gen
         )
         SELECT
-            cid,
+            TRIM(cid) AS cid,
             CASE
-                WHEN bdate > GETDATE() THEN NULL
+                WHEN bdate IS NOT NULL AND bdate > CAST(GETDATE() AS DATE) THEN NULL
                 ELSE bdate
             END AS bdate,
             CASE
-                WHEN UPPER(LTRIM(RTRIM(gen))) IN ('F', 'FEMALE') THEN 'Female'
-                WHEN UPPER(LTRIM(RTRIM(gen))) IN ('M', 'MALE') THEN 'Male'
+                WHEN UPPER(TRIM(gen)) IN ('F', 'FEMALE') THEN 'Female'
+                WHEN UPPER(TRIM(gen)) IN ('M', 'MALE') THEN 'Male'
                 ELSE 'n/a'
             END AS gen
         FROM bronze.erp_cust_az12;
 
-        SET @end_time = GETDATE();
-        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR) + ' seconds';
+        SET @rows = @@ROWCOUNT;
+
+        SET @end_time = SYSUTCDATETIME();
+        PRINT '>> Rows Loaded: ' + CAST(@rows AS NVARCHAR(20));
+        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' seconds';
         PRINT '>> -------------';
 
 
-        ------------------------------------------------------------
-        -- Load: silver.erp_loc_a101
-        ------------------------------------------------------------
-        SET @start_time = GETDATE();
-        PRINT '>> Truncating Table: silver.erp_loc_a101';
+        ---------------------------------------------------------------------
+        -- 5) silver.erp_loc_a101
+        ---------------------------------------------------------------------
+        SET @table = 'silver.erp_loc_a101';
+        SET @start_time = SYSUTCDATETIME();
+
+        PRINT '>> Truncating Table: ' + @table;
         TRUNCATE TABLE silver.erp_loc_a101;
 
-        PRINT '>> Inserting Data Into: silver.erp_loc_a101';
+        PRINT '>> Inserting Data Into: ' + @table;
 
         INSERT INTO silver.erp_loc_a101
         (
@@ -243,29 +284,34 @@ BEGIN
             cntry
         )
         SELECT
-            cid,
+            TRIM(cid) AS cid,
             CASE
-                WHEN LTRIM(RTRIM(cntry)) = '' OR cntry IS NULL THEN 'n/a'
-                WHEN UPPER(LTRIM(RTRIM(cntry))) IN ('US', 'USA', 'UNITED STATES') THEN 'United States'
-                WHEN UPPER(LTRIM(RTRIM(cntry))) IN ('DE', 'GERMANY') THEN 'Germany'
-                WHEN UPPER(LTRIM(RTRIM(cntry))) IN ('FR', 'FRANCE') THEN 'France'
-                ELSE LTRIM(RTRIM(cntry))
+                WHEN cntry IS NULL OR TRIM(cntry) = '' THEN 'n/a'
+                WHEN UPPER(TRIM(cntry)) IN ('US', 'USA', 'UNITED STATES') THEN 'United States'
+                WHEN UPPER(TRIM(cntry)) IN ('DE', 'GERMANY') THEN 'Germany'
+                WHEN UPPER(TRIM(cntry)) IN ('FR', 'FRANCE') THEN 'France'
+                ELSE TRIM(cntry)
             END AS cntry
         FROM bronze.erp_loc_a101;
 
-        SET @end_time = GETDATE();
-        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR) + ' seconds';
+        SET @rows = @@ROWCOUNT;
+
+        SET @end_time = SYSUTCDATETIME();
+        PRINT '>> Rows Loaded: ' + CAST(@rows AS NVARCHAR(20));
+        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' seconds';
         PRINT '>> -------------';
 
 
-        ------------------------------------------------------------
-        -- Load: silver.erp_px_cat_g1v2
-        ------------------------------------------------------------
-        SET @start_time = GETDATE();
-        PRINT '>> Truncating Table: silver.erp_px_cat_g1v2';
+        ---------------------------------------------------------------------
+        -- 6) silver.erp_px_cat_g1v2
+        ---------------------------------------------------------------------
+        SET @table = 'silver.erp_px_cat_g1v2';
+        SET @start_time = SYSUTCDATETIME();
+
+        PRINT '>> Truncating Table: ' + @table;
         TRUNCATE TABLE silver.erp_px_cat_g1v2;
 
-        PRINT '>> Inserting Data Into: silver.erp_px_cat_g1v2';
+        PRINT '>> Inserting Data Into: ' + @table;
 
         INSERT INTO silver.erp_px_cat_g1v2
         (
@@ -275,14 +321,17 @@ BEGIN
             maintenance
         )
         SELECT
-            id,
-            LTRIM(RTRIM(cat)) AS cat,
-            LTRIM(RTRIM(subcat)) AS subcat,
-            LTRIM(RTRIM(maintenance)) AS maintenance
+            TRIM(id) AS id,
+            TRIM(cat) AS cat,
+            TRIM(subcat) AS subcat,
+            TRIM(maintenance) AS maintenance
         FROM bronze.erp_px_cat_g1v2;
 
-        SET @end_time = GETDATE();
-        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR) + ' seconds';
+        SET @rows = @@ROWCOUNT;
+
+        SET @end_time = SYSUTCDATETIME();
+        PRINT '>> Rows Loaded: ' + CAST(@rows AS NVARCHAR(20));
+        PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR(20)) + ' seconds';
         PRINT '>> -------------';
 
 
@@ -298,6 +347,7 @@ BEGIN
         PRINT 'Error Number: ' + CAST(ERROR_NUMBER() AS NVARCHAR(20));
         PRINT 'Error State: ' + CAST(ERROR_STATE() AS NVARCHAR(20));
         PRINT 'Error Line: ' + CAST(ERROR_LINE() AS NVARCHAR(20));
+        PRINT 'Last Table Attempted: ' + ISNULL(@table, 'n/a');
         THROW;
     END CATCH
 END;

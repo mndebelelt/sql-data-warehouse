@@ -55,7 +55,7 @@ jobs:
       - name: Run data quality tests
         run: |
           set -e
-          for f in tests/*.sql; do
+          for f in data-quality-checks/*.sql; do
             echo "Running $f"
             sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -C -b -i "$f"
           done

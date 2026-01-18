@@ -50,7 +50,7 @@ jobs:
 
       - name: Build warehouse (run all scripts)
         run: |
-          sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -C -b -i scripts/01_run_all.sql
+          sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -C -b -i scripts/00_run_all.sql
 
       - name: Run data quality tests
         run: |

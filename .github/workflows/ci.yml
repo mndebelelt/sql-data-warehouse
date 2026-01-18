@@ -52,14 +52,14 @@ jobs:
       - name: Build warehouse (run all scripts)
         run: |
           cd scripts
-          sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -C -b -i 00_run_all.sql
+          sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -d DataWarehouse -C -b -i 00_run_all.sql
 
       - name: Run data quality tests
         run: |
           set -e
           for f in data-quality-checks/*.sql; do
             echo "Running $f"
-            sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -C -b -i "$f"
+            sqlcmd -S "$SQL_HOST,$SQL_PORT" -U "$SQL_USER" -P "$SA_PASSWORD" -d DataWarehouse -C -b -i "$f"
           done
 
       - name: Stop container
